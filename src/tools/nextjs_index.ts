@@ -4,6 +4,7 @@ import {
   listNextJsTools,
   detectProtocol,
   MCP_HOST,
+  type RuntimeRequestOptions,
 } from "../_internal/nextjs-runtime-manager.js"
 
 export const inputSchema = {
@@ -70,7 +71,7 @@ type NextjsIndexArgs = {
   port?: string | number
 }
 
-async function probeAndListTools(port: number): Promise<{
+async function probeAndListTools(port: number, options: RuntimeRequestOptions): Promise<{
   success: boolean
   server?: {
     port: number
@@ -81,8 +82,8 @@ async function probeAndListTools(port: number): Promise<{
   error?: string
 }> {
   try {
-    const protocol = await detectProtocol(port)
-    const tools = await listNextJsTools(port)
+    const protocol = await detectProtocol(port, options)
+    const tools = await listNextJsTools(port, options)
 
     if (tools.length === 0) {
       return {
@@ -113,12 +114,15 @@ async function probeAndListTools(port: number): Promise<{
   }
 }
 
-export async function handler(args: NextjsIndexArgs = {}): Promise<string> {
+export async function handler(
+  args: NextjsIndexArgs = {},
+  options: RuntimeRequestOptions = {}
+): Promise<string> {
   try {
     // If a specific port is provided, probe it directly
     if (args.port !== undefined) {
       const portNumber = typeof args.port === "string" ? parseInt(args.port, 10) : args.port
-      const result = await probeAndListTools(portNumber)
+      const result = await probeAndListTools(portNumber, options)
 
       if (result.success && result.server) {
         return JSON.stringify({
@@ -138,24 +142,14 @@ export async function handler(args: NextjsIndexArgs = {}): Promise<string> {
     }
 
     // Auto-discover all servers
-    const servers = await getAllAvailableServers()
-
-    if (servers.length === 0) {
-      return JSON.stringify({
-        success: false,
-        error: "No running Next.js dev servers with MCP enabled found",
-        hint: "Make sure you're running Next.js 16+ (MCP is enabled by default). Start the dev server with 'npm run dev'. If on Next.js 15 or earlier, upgrade with 'npx @next/codemod@latest upgrade latest'.",
-        ai_instruction:
-          "IMPORTANT: Server auto-discovery may not work on all operating systems or network configurations. Please ask the user: 'What port is your Next.js dev server running on?'. Once you have the port number, call this tool again with the 'port' parameter set to the user-provided port.",
-        servers: [],
-      })
-    }
+    const servers = await getAllAvailableServers(options)
 
     // Get tools for each server
-    const serversWithTools = await Promise.all(
+    const candidatesWithTools = await Promise.all(
       servers.map(async (s) => {
-        const protocol = await detectProtocol(s.port)
-        const tools = await listNextJsTools(s.port)
+        const protocol = await detectProtocol(s.port, options)
+        const tools = await listNextJsTools(s.port, options)
+        if (tools.length === 0) return null
         return {
           port: s.port,
           pid: s.pid,
@@ -170,6 +164,19 @@ export async function handler(args: NextjsIndexArgs = {}): Promise<string> {
         }
       })
     )
+
+    const serversWithTools = candidatesWithTools.filter((server) => server !== null)
+
+    if (serversWithTools.length === 0) {
+      return JSON.stringify({
+        success: false,
+        error: "No running Next.js dev servers with MCP enabled found",
+        hint: "Make sure you're running Next.js 16+ (MCP is enabled by default). Start the dev server with 'npm run dev'. If on Next.js 15 or earlier, upgrade with 'npx @next/codemod@latest upgrade latest'.",
+        ai_instruction:
+          "IMPORTANT: Server auto-discovery may not work on all operating systems or network configurations. Please ask the user: 'What port is your Next.js dev server running on?'. Once you have the port number, call this tool again with the 'port' parameter set to the user-provided port.",
+        servers: [],
+      })
+    }
 
     return JSON.stringify({
       success: true,
